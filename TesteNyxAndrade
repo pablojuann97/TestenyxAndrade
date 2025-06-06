@@ -1,16 +1,17 @@
 import logging
 import requests
 import sqlite3
+import json
+import os
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
-import os
-import json
+import asyncio
 
 # Configurações
 BOT_TOKEN = '7568414357:AAF6xlCGCKelDRsOC7CWFwFs0FxdkuGaMfw'
-API_KEY_PUSHINPAY = '32463|gOKr7ALxeKulM7bOd9pQYuVuB5l0dqvfnVEfWRmF508c6e93'  # Gerado em "Configurações > Integrações"
-GRUPO_VIP_ID = -1234567890  # Substitua pelo ID do seu grupo VIP
+API_KEY_PUSHINPAY = '32463|gOKr7ALxeKulM7bOd9pQYuVuB5l0dqvfnVEfWRmF508c6e93'
+GRUPO_VIP_ID = -1234567890  # Substitua pelo ID do grupo real
 
 # Banco de dados
 conn = sqlite3.connect('usuarios.db', check_same_thread=False)
@@ -50,7 +51,7 @@ async def gerar_pix(update: Update, context: ContextTypes.DEFAULT_TYPE):
     })
 
     headers = {
-         'Authorization':  'Bearer 32463|gOKr7ALxeKulM7bOd9pQYuVuB5l0dqvfnVEfWRmF508c6e93',
+        'Authorization': f'Bearer {API_KEY_PUSHINPAY}',
         'Accept': 'application/json',
         'Content-Type': 'application/json'
     }
@@ -58,20 +59,22 @@ async def gerar_pix(update: Update, context: ContextTypes.DEFAULT_TYPE):
     response = requests.post(url, headers=headers, data=payload)
 
     if response.status_code == 200:
-        cobranca = response.json()
-        pix_code = cobranca['payload']['qr_code']
-        qr_code_url = cobranca['payload']['qr_code_image']
+        try:
+            cobranca = response.json()
+            pix_code = cobranca['payload']['qr_code']
+            qr_code_url = cobranca['payload']['qr_code_image']
 
-        legenda = f"✅ PIX gerado para acesso VIP de {dias} dias:\n\n🔁 Copie e cole:\n`{pix_code}`"
-        await query.message.reply_photo(photo=qr_code_url, caption=legenda, parse_mode='Markdown')
+            legenda = f"✅ PIX gerado para acesso VIP de {dias} dias:\n\n🔁 Copie e cole:\n`{pix_code}`"
+            await query.message.reply_photo(photo=qr_code_url, caption=legenda, parse_mode='Markdown')
 
-        validade = datetime.now() + timedelta(days=dias)
-        c.execute("INSERT OR REPLACE INTO usuarios (user_id, nome, validade) VALUES (?, ?, ?)",
-                  (user.id, user.full_name, validade.strftime('%Y-%m-%d')))
-        conn.commit()
+            validade = datetime.now() + timedelta(days=dias)
+            c.execute("INSERT OR REPLACE INTO usuarios (user_id, nome, validade) VALUES (?, ?, ?)",
+                      (user.id, user.full_name, validade.strftime('%Y-%m-%d')))
+            conn.commit()
 
-        # Adicionar ao grupo (somente após verificação de pagamento real em produção)
-        # await context.bot.add_chat_member(chat_id=GRUPO_VIP_ID, user_id=user.id)
+        except Exception as e:
+            await query.message.reply_text("❌ Erro ao interpretar resposta da API.")
+            logging.error("Erro JSON:", exc_info=True)
     else:
         await query.message.reply_text("❌ Erro ao gerar o Pix. Tente novamente mais tarde.")
         logging.error(response.text)
@@ -90,8 +93,8 @@ async def verificar_validade(context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logging.error(f"Erro ao remover {user_id}: {e}")
 
-# Execução
-if _name_ == '_main_':
+# Execução principal com webhook
+async def main():
     logging.basicConfig(level=logging.INFO)
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -100,10 +103,15 @@ if _name_ == '_main_':
     app.add_handler(CallbackQueryHandler(gerar_pix))
     app.job_queue.run_repeating(verificar_validade, interval=86400, first=10)
 
+    await app.bot.delete_webhook(drop_pending_updates=True)
+
     PORT = int(os.environ.get('PORT', 8443))
-    app.run_webhook(
+    await app.run_webhook(
         listen="0.0.0.0",
         port=PORT,
         url_path=BOT_TOKEN,
         webhook_url=f"https://nyxandradebot.onrender.com/{BOT_TOKEN}"
     )
+
+if __name__ == '__main__':
+    asyncio.run(main())
